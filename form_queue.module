@@ -1,0 +1,112 @@
+<?php
+/**
+ * @file form_queue.module
+ * Provides queue backend for selected Drupal forms.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function form_queue_menu() {
+  $items = array();
+
+  $items['admin/config/system/form-queue'] = array(
+    'title' => 'Forms Queue',
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function form_queue_form_alter(&$form, &$form_state, $form_id) {
+
+  // Check to see if this form is a webform. (Webform form IDs are prefixed with
+  // 'webform_client'.)
+  //
+  // @todo Currently this is hard-coded to webforms. Even better would be to
+  // have an admin config form with a text area that lets people input form IDs
+  // or form_id prefixes. This way node forms and entity forms could be easily
+  // handled this way too.
+  if (strpos($form_id, 'ebform_client')) {
+
+    // Suppress submit handlers. These can be called later when submissions are
+    // pulled from the queue to be processed.
+    $form['form_queue_suppressed_submit_handlers'] = array(
+      '#type' => 'hidden',
+      '#value' => $form['#submit'],
+    );
+    // Call our own submit handler only.
+    $form['#submit'] = array('form_queue_submit');
+
+    // @todo Note: We're not suppressing validation handlers here right now.
+    // If form validation hits the DB, this is potentially an obstacle to
+    // scalability. Consider suppressing validation or providing a form-by-form
+    // option for suppressing validation here.
+  }  
+}
+
+/**
+ * Custom form submit handler.
+ */
+function form_queue_submit($form, $form_state) {
+
+  $data = new stdClass();
+  $data->form = $form;
+  $data->form_state = $form_state; 
+  $queue_name = 'form_queue_submissions';
+
+  // Queue form submission rather than process it now.
+  $queue = DrupalQueue::get($queue_name);
+  $queue->createQueue();
+  $queue->createItem($data);
+}
+
+
+/**
+ * Implements hook_cron_queue_info().
+ */
+function form_queue_cron_queue_info() {
+  return array(
+    'form_queue_submissions' => array(
+      'worker callback' => 'form_queue_process_submissions',
+      'time' => 30,
+      'skip on cron' => TRUE,
+    ),
+  );  
+}
+
+/**
+ * Worker callback processing queue: form_queue_submissions.
+ *
+ * Process form submissions from the queue.
+ *
+ * Submitted webform data and suppressed handlers are here:
+ * - $form_state['values']['submitted']
+ * - $form_state['values']['form_queue_suppressed_submit_handlers']
+ *
+ * @param obj $data
+ *   $form and $form_state captured upon form submission. Properties:
+ *     - form
+ *     - form_state
+ */
+function form_queue_process_submissions($data) {
+  if (!property_exists($data, 'form') || !property_exists($data, 'form_state')) {
+    throw new Exception('$data is missing required form or form_state property.');  
+  }
+
+  // Retrieve suppressed submit handlers that were not called when form was
+  // submitted and submission was queued.
+  $form = $data->form;
+  $form_state = $data->form_state;
+  $submit_handlers = $form_state['values']['form_queue_suppressed_submit_handlers'];
+
+  // @todo Provide some form of sanitization or validation here.
+
+  // Loop through submit handlers calling each and giving them a chance to
+  // process submitted data.
+  foreach ($submit_handlers as $function) {
+    $function($form, $form_state);
+  }
+}

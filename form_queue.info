@@ -1,0 +1,3 @@
+name = Form Queue
+description = Intercept and queue selected form submissions. Store in any valid queue back end. Process with workers.
+core = 7.x
